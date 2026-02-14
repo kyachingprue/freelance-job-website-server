@@ -40,6 +40,8 @@ async function run() {
     const roleRequestCollection = client
       .db('workHub')
       .collection('RoleRequests');
+    const notificationsCollection = client.db('workHub').collection('Notifications')
+    const freelancerHireCollection = client.db('workHub').collection("FreelancerHires");
 
     // ✅ Get single user
     app.get('/users/email/:email', async (req, res) => {
@@ -228,6 +230,24 @@ async function run() {
 
     // Client API
     // Get jobs by client email
+    app.get('/jobs/:id', async (req, res) => {
+      const id = req.params.id;
+
+      try {
+        const job = await jobsCollection.findOne({
+          _id: new ObjectId(id),
+        });
+
+        if (!job) {
+          return res.status(404).send({ message: 'Job not found' });
+        }
+
+        res.send(job);
+      } catch (error) {
+        res.status(500).send({ message: 'Server error' });
+      }
+    });
+
    app.get('/jobs/client/:email', async (req, res) => {
      try {
        const email = decodeURIComponent(req.params.email);
@@ -257,6 +277,94 @@ async function run() {
        res.status(500).send({ message: 'Server error' });
      }
    });
+    
+    app.patch('/jobs/:id', async (req, res) => {
+      const id = req.params.id;
+      const updatedData = req.body;
+
+      const result = await jobsCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: updatedData },
+      );
+
+      res.send(result);
+    });
+
+    //Client Proposals API
+    app.get('/proposals/client/:email', async (req, res) => {
+      const email = req.params.email;
+
+      const result = await proposalsCollection
+        .find({ clientEmail: email })
+        .toArray();
+
+      res.send(result);
+    });
+
+    app.patch('/proposals/status/:id', async (req, res) => {
+      const id = req.params.id;
+      const { status } = req.body;
+
+      const proposal = await proposalsCollection.findOne({
+        _id: new ObjectId(id),
+      });
+
+      if (!proposal) {
+        return res.status(404).send({ message: 'Proposal not found' });
+      }
+
+      // ✅ Update proposal status
+      await proposalsCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: { status } },
+      );
+
+      if (status === 'accepted') {
+        // 1️⃣ Close the job
+        await jobsCollection.updateOne(
+          { _id: new ObjectId(proposal.jobId) },
+          { $set: { status: 'Closed' } },
+        );
+
+        // 2️⃣ Create Hire Record
+        await freelancerHireCollection.insertOne({
+          jobId: proposal.jobId,
+          jobTitle: proposal.jobTitle,
+          freelancerId: proposal.freelancerId,
+          freelancerName: proposal.freelancerName,
+          freelancerEmail: proposal.freelancerEmail,
+          clientEmail: proposal.clientEmail,
+          hiredAt: new Date(),
+        });
+
+        // 3️⃣ Delete other proposals of this job
+        await proposalsCollection.deleteMany({
+          jobId: proposal.jobId,
+          _id: { $ne: new ObjectId(id) },
+        });
+
+        // 4️⃣ Create Notification
+        await notificationsCollection.insertOne({
+          receiverEmail: proposal.freelancerEmail,
+          message: `Congratulations! You have been hired for ${proposal.jobTitle}`,
+          status: 'unread',
+          createdAt: new Date(),
+        });
+      }
+
+
+      if (status === 'rejected') {
+        await notificationsCollection.insertOne({
+          receiverEmail: proposal.freelancerEmail,
+          message: `Your proposal for ${proposal.jobTitle} was rejected`,
+          status: 'unread',
+          createdAt: new Date(),
+        });
+      }
+
+      res.send({ message: 'Status updated successfully' });
+    });
+
 
   } finally {
     // Ensures that the client will close when you finish/error
