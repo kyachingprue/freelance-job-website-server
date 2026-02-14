@@ -43,10 +43,20 @@ async function run() {
 
     // ✅ Get single user
     app.get('/users/email/:email', async (req, res) => {
-      const email = decodeURIComponent(req.params.email);
-      const query = { email: email };
-      const user = await usersCollection.findOne(query);
-      res.send(user);
+      try {
+        const email = decodeURIComponent(req.params.email);
+
+        const user = await usersCollection.findOne({ email });
+
+        if (!user) {
+          return res.status(404).send({ message: 'User not found' });
+        }
+
+        res.status(200).send(user);
+      } catch (error) {
+        console.error('Error fetching user:', error);
+        res.status(500).send({ message: 'Internal server error' });
+      }
     });
 
     app.get('/users/:id', async (req, res) => {
@@ -215,6 +225,39 @@ async function run() {
       const result = await jobsCollection.findOne(query);
       res.send(result);
     });
+
+    // Client API
+    // Get jobs by client email
+   app.get('/jobs/client/:email', async (req, res) => {
+     try {
+       const email = decodeURIComponent(req.params.email);
+
+       const result = await jobsCollection
+         .find({ 'client.email': email })
+         .toArray();
+
+       res.send(result);
+     } catch (error) {
+       res.status(500).send({ message: 'Server error' });
+     }
+   });
+
+   app.post('/jobs', async (req, res) => {
+     try {
+       const job = req.body;
+
+       if (!job?.title || !job?.client?.email) {
+         return res.status(400).send({ message: 'Missing required fields' });
+       }
+
+       const result = await jobsCollection.insertOne(job);
+
+       res.status(201).send(result);
+     } catch (error) {
+       res.status(500).send({ message: 'Server error' });
+     }
+   });
+
   } finally {
     // Ensures that the client will close when you finish/error
     // await client.close();
