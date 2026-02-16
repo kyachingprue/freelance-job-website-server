@@ -2,6 +2,8 @@ require('dotenv').config();
 const express = require('express');
 const app = express();
 const cors = require('cors');
+const cookieParser = require('cookie-parser');
+const jwt = require('jsonwebtoken');
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 const port = process.env.SERVER_PORT || 5000;
 
@@ -12,6 +14,7 @@ app.use(
     credentials: true,
   }),
 );
+app.use(cookieParser());
 
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.nhw49.mongodb.net/?appName=Cluster0`;
 
@@ -40,8 +43,60 @@ async function run() {
     const roleRequestCollection = client
       .db('workHub')
       .collection('RoleRequests');
-    const notificationsCollection = client.db('workHub').collection('Notifications')
-    const freelancerHireCollection = client.db('workHub').collection("FreelancerHires");
+    const notificationsCollection = client
+      .db('workHub')
+      .collection('Notifications');
+    const freelancerHireCollection = client
+      .db('workHub')
+      .collection('FreelancerHires');
+
+    //JWT Authentication Middleware
+    app.post('/jwt', async (req, res) => {
+      const user = req.body; // { email }
+
+      if (!user?.email) {
+        return res.status(400).send({ message: 'Email required' });
+      }
+
+      const token = jwt.sign(user, process.env.JWT_SECRET_TOKEN, {
+        expiresIn: '7d',
+      });
+
+      res
+        .cookie('token', token, {
+          httpOnly: true,
+          secure: process.env.NODE_ENV === 'production',
+          sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'strict',
+          maxAge: 7 * 24 * 60 * 60 * 1000,
+        })
+        .send({ success: true });
+    });
+
+    const verifyToken = (req, res, next) => {
+      const token = req.cookies.token;
+
+      if (!token) {
+        return res.status(401).send({ message: 'Unauthorized' });
+      }
+
+      jwt.verify(token, process.env.JWT_SECRET_TOKEN, (err, decoded) => {
+        if (err) {
+          return res.status(401).send({ message: 'Invalid token' });
+        }
+
+        req.decoded = decoded;
+        next();
+      });
+    };
+
+    app.post('/logout', (req, res) => {
+      res
+        .clearCookie('token', {
+          secure: process.env.NODE_ENV === 'production',
+          sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'strict',
+        })
+        .send({ success: true });
+    });
 
     // ✅ Get single user
     app.get('/users/email/:email', async (req, res) => {
@@ -198,14 +253,37 @@ async function run() {
 
     // Save proposal
     app.post('/proposals', async (req, res) => {
-      const proposal = req.body;
+      try {
+        const proposal = req.body;
 
-      if (!proposal.jobId || !proposal.freelancerId) {
-        return res.status(400).send({ message: 'Invalid proposal data' });
+        if (!proposal.jobId || !proposal.freelancerId) {
+          return res.status(400).send({ message: 'Invalid proposal data' });
+        }
+
+        // 1️⃣ Save Proposal
+        const result = await proposalsCollection.insertOne(proposal);
+
+        // 2️⃣ Get Job Info (SECURE)
+        const job = await jobsCollection.findOne({
+          _id: new ObjectId(proposal.jobId),
+        });
+
+        if (job?.client?.email) {
+          const notification = {
+            receiverEmail: job.client.email, // client email from DB
+            message: `${proposal.freelancerName} applied for your job "${job.title}"`,
+            status: 'unread',
+            createdAt: new Date(),
+          };
+
+          await notificationsCollection.insertOne(notification);
+        }
+
+        res.send(result);
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ message: 'Failed to submit proposal' });
       }
-
-      const result = await proposalsCollection.insertOne(proposal);
-      res.send(result);
     });
 
     // Get single job by id
@@ -248,36 +326,36 @@ async function run() {
       }
     });
 
-   app.get('/jobs/client/:email', async (req, res) => {
-     try {
-       const email = decodeURIComponent(req.params.email);
+    app.get('/jobs/client/:email', async (req, res) => {
+      try {
+        const email = decodeURIComponent(req.params.email);
 
-       const result = await jobsCollection
-         .find({ 'client.email': email })
-         .toArray();
+        const result = await jobsCollection
+          .find({ 'client.email': email })
+          .toArray();
 
-       res.send(result);
-     } catch (error) {
-       res.status(500).send({ message: 'Server error' });
-     }
-   });
+        res.send(result);
+      } catch (error) {
+        res.status(500).send({ message: 'Server error' });
+      }
+    });
 
-   app.post('/jobs', async (req, res) => {
-     try {
-       const job = req.body;
+    app.post('/jobs', async (req, res) => {
+      try {
+        const job = req.body;
 
-       if (!job?.title || !job?.client?.email) {
-         return res.status(400).send({ message: 'Missing required fields' });
-       }
+        if (!job?.title || !job?.client?.email) {
+          return res.status(400).send({ message: 'Missing required fields' });
+        }
 
-       const result = await jobsCollection.insertOne(job);
+        const result = await jobsCollection.insertOne(job);
 
-       res.status(201).send(result);
-     } catch (error) {
-       res.status(500).send({ message: 'Server error' });
-     }
-   });
-    
+        res.status(201).send(result);
+      } catch (error) {
+        res.status(500).send({ message: 'Server error' });
+      }
+    });
+
     app.patch('/jobs/:id', async (req, res) => {
       const id = req.params.id;
       const updatedData = req.body;
@@ -331,6 +409,7 @@ async function run() {
           jobId: proposal.jobId,
           jobTitle: proposal.jobTitle,
           freelancerId: proposal.freelancerId,
+          freelancerProfile: proposal.freelancerProfile,
           freelancerName: proposal.freelancerName,
           freelancerEmail: proposal.freelancerEmail,
           clientEmail: proposal.clientEmail,
@@ -352,7 +431,6 @@ async function run() {
         });
       }
 
-
       if (status === 'rejected') {
         await notificationsCollection.insertOne({
           receiverEmail: proposal.freelancerEmail,
@@ -365,7 +443,92 @@ async function run() {
       res.send({ message: 'Status updated successfully' });
     });
 
+    //Notifications API
+    // Get notifications for specific user
+    app.get('/notifications/:email', async (req, res) => {
+      const email = req.params.email;
 
+      try {
+        const result = await notificationsCollection
+          .find({ receiverEmail: email })
+          .sort({ createdAt: -1 })
+          .toArray();
+
+        res.send(result);
+      } catch (error) {
+        res.status(500).send({ message: 'Server error' });
+      }
+    });
+    app.get('/notifications/unread-count/:email', async (req, res) => {
+      const email = req.params.email;
+
+      const count = await notificationsCollection.countDocuments({
+        receiverEmail: email,
+        status: 'unread',
+      });
+
+      res.send({ count });
+    });
+    app.patch('/notifications/mark-read/:email', async (req, res) => {
+      const email = req.params.email;
+
+      const result = await notificationsCollection.updateMany(
+        { receiverEmail: email, status: 'unread' },
+        { $set: { status: 'read' } },
+      );
+
+      res.send(result);
+    });
+
+    //Client Hire Freelancer API
+    // Get hires by client email
+    app.get('/hires/:email', async (req, res) => {
+      const email = req.params.email;
+
+      try {
+        const result = await freelancerHireCollection
+          .find({ clientEmail: email })
+          .toArray();
+
+        res.send(result);
+      } catch (error) {
+        res.status(500).send({ message: 'Server error' });
+      }
+    });
+    app.get('/hire-details/:id', async (req, res) => {
+      const id = req.params.id;
+
+      // Validate ObjectId
+      if (!ObjectId.isValid(id)) {
+        return res.status(400).send({ message: 'Invalid hire ID' });
+      }
+
+      try {
+        // Find the hire document
+        const hire = await freelancerHireCollection.findOne({
+          _id: new ObjectId(id),
+        });
+
+        if (!hire) return res.status(404).send({ message: 'Hire not found' });
+
+        // Find the freelancer full profile
+        const freelancer = await usersCollection.findOne({
+          email: hire.freelancerEmail,
+        });
+
+        if (!freelancer)
+          return res.status(404).send({ message: 'Freelancer not found' });
+
+        // Send response
+        res.send({
+          hireInfo: hire,
+          freelancerInfo: freelancer,
+        });
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ message: 'Server error' });
+      }
+    });
   } finally {
     // Ensures that the client will close when you finish/error
     // await client.close();
