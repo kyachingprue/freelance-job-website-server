@@ -170,6 +170,25 @@ async function run() {
         res.status(500).send({ error: 'Server error' });
       }
     });
+    
+    app.patch('/users/verify/:email', async (req, res) => {
+      const email = req.params.email;
+
+      try {
+        const filter = { email: email };
+        const updateDoc = {
+          $set: { isVerified: true },
+        };
+
+        const result = await usersCollection.updateOne(filter, updateDoc);
+
+        res.send(result);
+      } catch (error) {
+        res
+          .status(500)
+          .send({ message: 'Failed to update verification status' });
+      }
+    });
 
     // User role request
     app.get('/role-requests', async (req, res) => {
@@ -413,6 +432,11 @@ async function run() {
           freelancerName: proposal.freelancerName,
           freelancerEmail: proposal.freelancerEmail,
           clientEmail: proposal.clientEmail,
+          companyLogo: proposal.companyLogo,
+          clientName: proposal.clientName,
+          bidAmount: proposal.bidAmount,
+          estimatedTime: proposal.estimatedTime,
+          status: 'in_progress',
           hiredAt: new Date(),
         });
 
