@@ -315,20 +315,28 @@ async function run() {
     //Client specific jobs
     app.get('/jobs/:id', async (req, res) => {
       const id = req.params.id;
+      try {
+        let query;
+        if (ObjectId.isValid(id)) {
+          query = {
+            $or: [
+              { _id: new ObjectId(id) },
+              { _id: id }, 
+            ],
+          };
+        } else {
+          query = { _id: id };
+        }
+        const job = await jobsCollection.findOne(query);
 
-      if (!ObjectId.isValid(id)) {
-        return res.status(400).send({ message: 'Invalid ID format' });
+        if (!job) {
+          return res.status(404).send({ message: 'Job not found' });
+        }
+
+        res.send(job);
+      } catch (error) {
+        res.status(500).send({ message: 'Server error' });
       }
-
-      const job = await jobsCollection.findOne({
-        _id: new ObjectId(id),
-      });
-
-      if (!job) {
-        return res.status(404).send({ message: 'Job not found' });
-      }
-
-      res.send(job);
     });
 
     app.get('/jobs/client/:email', async (req, res) => {
