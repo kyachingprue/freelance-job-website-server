@@ -170,7 +170,7 @@ async function run() {
         res.status(500).send({ error: 'Server error' });
       }
     });
-    
+
     app.patch('/users/verify/:email', async (req, res) => {
       const email = req.params.email;
 
@@ -312,37 +312,23 @@ async function run() {
       res.send(result);
     });
 
+    //Client specific jobs
     app.get('/jobs/:id', async (req, res) => {
       const id = req.params.id;
 
-      let query;
-      if (ObjectId.isValid(id)) {
-        query = { _id: new ObjectId(id) };
-      } else {
-        query = { _id: id };
+      if (!ObjectId.isValid(id)) {
+        return res.status(400).send({ message: 'Invalid ID format' });
       }
-      const result = await jobsCollection.findOne(query);
-      res.send(result);
-    });
 
-    // Client API
-    // Get jobs by client email
-    app.get('/jobs/:id', async (req, res) => {
-      const id = req.params.id;
+      const job = await jobsCollection.findOne({
+        _id: new ObjectId(id),
+      });
 
-      try {
-        const job = await jobsCollection.findOne({
-          _id: new ObjectId(id),
-        });
-
-        if (!job) {
-          return res.status(404).send({ message: 'Job not found' });
-        }
-
-        res.send(job);
-      } catch (error) {
-        res.status(500).send({ message: 'Server error' });
+      if (!job) {
+        return res.status(404).send({ message: 'Job not found' });
       }
+
+      res.send(job);
     });
 
     app.get('/jobs/client/:email', async (req, res) => {
@@ -387,6 +373,20 @@ async function run() {
       res.send(result);
     });
 
+    app.delete('/jobs/:id', async (req, res) => {
+      const id = req.params.id;
+
+      const result = await jobsCollection.deleteOne({
+        _id: new ObjectId(id),
+      });
+
+      if (result.deletedCount > 0) {
+        res.send({ success: true });
+      } else {
+        res.status(404).send({ message: 'Job not found' });
+      }
+    });
+
     //Client Proposals API
     app.get('/proposals/client/:email', async (req, res) => {
       const email = req.params.email;
@@ -398,7 +398,7 @@ async function run() {
       res.send(result);
     });
 
-    app.patch('/proposals/status/:id', async (req, res) => {
+    app.patch('/proposals/status/:id', verifyToken, async (req, res) => {
       const id = req.params.id;
       const { status } = req.body;
 
@@ -435,6 +435,8 @@ async function run() {
           companyLogo: proposal.companyLogo,
           clientName: proposal.clientName,
           bidAmount: proposal.bidAmount,
+          budgetType: proposal.budgetType,
+          currency: proposal.currency,
           estimatedTime: proposal.estimatedTime,
           status: 'in_progress',
           hiredAt: new Date(),
