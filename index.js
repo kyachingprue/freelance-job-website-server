@@ -89,6 +89,23 @@ async function run() {
       });
     };
 
+    // ✅ Verify Admin Middleware
+    const verifyAdmin = async (req, res, next) => {
+      const email = req.decoded?.email;
+
+      if (!email) {
+        return res.status(403).send({ message: 'Forbidden access' });
+      }
+
+      const user = await usersCollection.findOne({ email });
+
+      if (!user || user.role !== 'admin') {
+        return res.status(403).send({ message: 'Admin only access' });
+      }
+
+      next();
+    };
+
     app.post('/logout', (req, res) => {
       res
         .clearCookie('token', {
@@ -319,10 +336,7 @@ async function run() {
         let query;
         if (ObjectId.isValid(id)) {
           query = {
-            $or: [
-              { _id: new ObjectId(id) },
-              { _id: id }, 
-            ],
+            $or: [{ _id: new ObjectId(id) }, { _id: id }],
           };
         } else {
           query = { _id: id };
@@ -563,6 +577,88 @@ async function run() {
         res.status(500).send({ message: 'Server error' });
       }
     });
+
+    // Admin Dashboard APIs
+    // ✅ Get All Users (Admin Only)
+    app.get('/users', verifyToken, verifyAdmin, async (req, res) => {
+      try {
+        const users = await usersCollection
+          .find()
+          .sort({ createdAt: -1 })
+          .toArray();
+
+        res.send(users);
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ message: 'Failed to fetch users' });
+      }
+    });
+
+    // ✅ Get Single User Details (Admin Only)
+    // Find single job
+    app.get('/jobs/:id', async (req, res) => {
+      const id = req.params.id;
+
+      try {
+        let query =
+          ObjectId.isValid(id) && id.length === 24
+            ? { _id: new ObjectId(id) }
+            : { _id: id };
+        const job = await jobsCollection.findOne(query);
+
+        if (!job) return res.status(404).send({ message: 'Job not found' });
+
+        res.send(job);
+      } catch (err) {
+        console.error('Get Job Error:', err);
+        res.status(500).send({ message: 'Server error' });
+      }
+    });
+
+    // Update Job
+    app.patch('/admin/jobs/:id', verifyToken, verifyAdmin, async (req, res) => {
+      const id = req.params.id;
+      const updatedData = req.body;
+
+      try {
+        let query =
+          ObjectId.isValid(id) && id.length === 24
+            ? { _id: new ObjectId(id) }
+            : { _id: id };
+        const result = await jobsCollection.updateOne(query, {
+          $set: updatedData,
+        });
+
+        if (result.matchedCount === 0)
+          return res.status(404).send({ message: 'Job not found' });
+
+        res.send({ success: true, message: 'Job updated successfully' });
+      } catch (err) {
+        console.error('Update Job Error:', err);
+        res.status(500).send({ message: 'Update failed' });
+      }
+    });
+
+    // Delete Job
+    app.delete('/admin/jobs/:id', verifyToken, verifyAdmin, async (req, res) => {
+      const id = req.params.id;
+      try {
+        let query =
+          ObjectId.isValid(id) && id.length === 24
+            ? { _id: new ObjectId(id) }
+            : { _id: id };
+        const result = await jobsCollection.deleteOne(query);
+
+        if (result.deletedCount === 0)
+          return res.status(404).send({ message: 'Job not found' });
+
+        res.send({ success: true, message: 'Job deleted successfully' });
+      } catch (err) {
+        console.error('Delete Job Error:', err);
+        res.status(500).send({ message: 'Delete failed' });
+      }
+    });
+
   } finally {
     // Ensures that the client will close when you finish/error
     // await client.close();
