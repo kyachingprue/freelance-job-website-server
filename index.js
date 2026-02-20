@@ -595,7 +595,6 @@ async function run() {
     });
 
     // ✅ Get Single User Details (Admin Only)
-    // Find single job
     app.get('/jobs/:id', async (req, res) => {
       const id = req.params.id;
 
@@ -613,6 +612,14 @@ async function run() {
         console.error('Get Job Error:', err);
         res.status(500).send({ message: 'Server error' });
       }
+    });
+
+    app.get('/proposals', verifyToken, verifyAdmin, async (req, res) => {
+      const proposals = await proposalsCollection
+        .find()
+        .sort({ createdAt: -1 })
+        .toArray();
+      res.send(proposals);
     });
 
     // Update Job
@@ -639,26 +646,117 @@ async function run() {
       }
     });
 
-    // Delete Job
-    app.delete('/admin/jobs/:id', verifyToken, verifyAdmin, async (req, res) => {
+    app.patch('/role-requests/accept/:id', async (req, res) => {
       const id = req.params.id;
+
       try {
-        let query =
-          ObjectId.isValid(id) && id.length === 24
-            ? { _id: new ObjectId(id) }
-            : { _id: id };
-        const result = await jobsCollection.deleteOne(query);
+        const requestObjectId = new ObjectId(id);
 
-        if (result.deletedCount === 0)
-          return res.status(404).send({ message: 'Job not found' });
+        // 1️⃣ Find role request
+        const existingRequest = await roleRequestCollection.findOne({
+          _id: requestObjectId,
+        });
 
-        res.send({ success: true, message: 'Job deleted successfully' });
-      } catch (err) {
-        console.error('Delete Job Error:', err);
-        res.status(500).send({ message: 'Delete failed' });
+        if (!existingRequest) {
+          return res.status(404).send({
+            success: false,
+            message: 'Role request not found',
+          });
+        }
+
+        if (existingRequest.status !== 'pending') {
+          return res.status(400).send({
+            success: false,
+            message: 'Request already processed',
+          });
+        }
+
+        const { userId } = existingRequest;
+
+        // 🎯 Change role to client
+        const newRole = 'client';
+
+        // 2️⃣ Update Users Collection (using userId)
+        const userUpdate = await usersCollection.updateOne(
+          { _id: new ObjectId(userId) },
+          {
+            $set: {
+              role: newRole,
+              roleRequestSent: false, // optional
+            },
+          },
+        );
+
+        if (userUpdate.modifiedCount === 0) {
+          return res.status(400).send({
+            success: false,
+            message: 'User role update failed',
+          });
+        }
+
+        // 3️⃣ Update RoleRequest Collection
+        const requestUpdate = await roleRequestCollection.updateOne(
+          { _id: requestObjectId },
+          {
+            $set: {
+              status: 'approved',
+              requestRole: newRole,
+            },
+          },
+        );
+
+        if (requestUpdate.modifiedCount === 0) {
+          return res.status(400).send({
+            success: false,
+            message: 'Role request update failed',
+          });
+        }
+
+        // 4️⃣ Create Notification
+        await notificationsCollection.insertOne({
+          receiverEmail: existingRequest.userEmail,
+          message: `Your role has been upgraded to ${newRole}.`,
+          status: 'unread',
+          createdAt: new Date(),
+        });
+
+        res.send({
+          success: true,
+          message: 'User role updated to client successfully',
+        });
+      } catch (error) {
+        console.error('Accept Role Error:', error);
+        res.status(500).send({
+          success: false,
+          message: 'Internal Server Error',
+        });
       }
     });
 
+    // Delete Job
+    app.delete(
+      '/admin/jobs/:id',
+      verifyToken,
+      verifyAdmin,
+      async (req, res) => {
+        const id = req.params.id;
+        try {
+          let query =
+            ObjectId.isValid(id) && id.length === 24
+              ? { _id: new ObjectId(id) }
+              : { _id: id };
+          const result = await jobsCollection.deleteOne(query);
+
+          if (result.deletedCount === 0)
+            return res.status(404).send({ message: 'Job not found' });
+
+          res.send({ success: true, message: 'Job deleted successfully' });
+        } catch (err) {
+          console.error('Delete Job Error:', err);
+          res.status(500).send({ message: 'Delete failed' });
+        }
+      },
+    );
   } finally {
     // Ensures that the client will close when you finish/error
     // await client.close();
