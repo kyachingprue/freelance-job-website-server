@@ -49,6 +49,8 @@ async function run() {
     const freelancerHireCollection = client
       .db('workHub')
       .collection('FreelancerHires');
+    const clientAddWorkCollection = client.db('workHub').collection('ClientAddWork');
+    const freelancerWorkSubmissionCollection = client.db('workHub').collection('WorkSubmissions');
 
     //JWT Authentication Middleware
     app.post('/jwt', async (req, res) => {
@@ -287,6 +289,49 @@ async function run() {
       res.send(userProposals);
     });
 
+    app.post('/notifications', async (req, res) => {
+      const notification = req.body;
+
+      if (!notification?.receiverEmail || !notification?.message) {
+        return res.status(400).send({ message: 'Missing required fields' });
+      }
+
+      try {
+        const result = await notificationsCollection.insertOne(notification);
+        res.status(201).send(result);
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ message: 'Server error' });
+      }
+    });
+
+    app.post('/work-submissions', async (req, res) => {
+      const submission = req.body;
+
+      try {
+        const result = await freelancerWorkSubmissionCollection.insertOne(submission);
+
+        await freelancerHireCollection.updateOne(
+          {
+            jobId: submission.jobId,
+            freelancerEmail: submission.freelancerEmail,
+          },
+          { $set: { status: 'submitted' } },
+        );
+
+        await notificationsCollection.insertOne({
+          receiverEmail: submission.clientEmail,
+          message: `${submission.freelancerEmail} submitted work`,
+          status: 'unread',
+          createdAt: new Date(),
+        });
+
+        res.status(201).send(result);
+      } catch (error) {
+        res.status(500).send({ message: 'Server error' });
+      }
+    });
+
     // Save proposal
     app.post('/proposals', async (req, res) => {
       try {
@@ -322,11 +367,20 @@ async function run() {
       }
     });
 
+    // Client API
     // Get single job by id
     app.get('/jobs', async (req, res) => {
       const cursor = jobsCollection.find();
       const result = await cursor.toArray();
       res.send(result);
+    });
+
+    app.get('/client-submissions/by-hire/:hireId', async (req, res) => {
+      const { hireId } = req.params;
+      const submissions = await freelancerWorkSubmissionCollection
+        .find({ hireId })
+        .toArray();
+      res.send(submissions);
     });
 
     //Client specific jobs
@@ -363,6 +417,82 @@ async function run() {
 
         res.send(result);
       } catch (error) {
+        res.status(500).send({ message: 'Server error' });
+      }
+    });
+
+    app.get('/add-work/:email', async (req, res) => {
+      const email = req.params.email;
+
+      try {
+        // 1️⃣ Find freelancer hire IDs
+        const hires = await freelancerHireCollection
+          .find({ freelancerEmail: email })
+          .toArray();
+
+        const hireIds = hires.map(h => h._id.toString());
+
+        // 2️⃣ Find assigned works using hireId
+        const works = await clientAddWorkCollection
+          .find({ hireId: { $in: hireIds } })
+          .toArray();
+
+        // 3️⃣ Merge work + hire info
+        const mergedData = works.map(work => {
+          const hireInfo = hires.find(h => h._id.toString() === work.hireId);
+
+          return {
+            ...work,
+            hireInfo,
+          };
+        });
+
+        res.send(mergedData);
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ message: 'Server error' });
+      }
+    });
+
+    app.post('/add-work', async (req, res) => {
+      const work = req.body;
+
+      if (!work?.hireId) {
+        return res.status(400).send({ message: 'Missing hireId' });
+      }
+
+      try {
+        // 1️⃣ Save assigned work
+        const result = await clientAddWorkCollection.insertOne(work);
+
+        // 2️⃣ Find hire info to get freelancer email
+        const hire = await freelancerHireCollection.findOne({
+          _id: new ObjectId(work.hireId),
+        });
+
+        if (!hire) {
+          return res.status(404).send({ message: 'Hire not found' });
+        }
+
+        // 3️⃣ Create notification for freelancer
+        const notification = {
+          receiverEmail: hire.freelancerEmail,
+          message: `You have received a new assigned project: "${hire.jobTitle}"`,
+          status: 'unread',
+          createdAt: new Date(),
+        };
+
+        await notificationsCollection.insertOne(notification);
+
+        // 4️⃣ Update hire status (optional but recommended)
+        await freelancerHireCollection.updateOne(
+          { _id: new ObjectId(work.hireId) },
+          { $set: { status: 'in_progress' } },
+        );
+
+        res.status(201).send(result);
+      } catch (error) {
+        console.error(error);
         res.status(500).send({ message: 'Server error' });
       }
     });
@@ -529,13 +659,14 @@ async function run() {
     });
 
     //Client Hire Freelancer API
-    // Get hires by client email
     app.get('/hires/:email', async (req, res) => {
       const email = req.params.email;
 
       try {
         const result = await freelancerHireCollection
-          .find({ clientEmail: email })
+          .find({
+            $or: [{ clientEmail: email }, { freelancerEmail: email }],
+          })
           .toArray();
 
         res.send(result);
@@ -543,6 +674,7 @@ async function run() {
         res.status(500).send({ message: 'Server error' });
       }
     });
+
     app.get('/hire-details/:id', async (req, res) => {
       const id = req.params.id;
 
@@ -700,7 +832,6 @@ async function run() {
           {
             $set: {
               status: 'approved',
-              requestRole: newRole,
             },
           },
         );
