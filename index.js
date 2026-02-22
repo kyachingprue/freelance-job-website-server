@@ -723,55 +723,6 @@ async function run() {
       }
     });
 
-    app.patch(
-      '/freelancer-hires/make-payment',
-      verifyToken,
-      async (req, res) => {
-        try {
-          const { hireId } = req.body;
-
-          if (!hireId) {
-            return res.status(400).send({
-              success: false,
-              message: 'Hire ID is required',
-            });
-          }
-
-          const filter = { _id: new ObjectId(hireId) };
-
-          const updateDoc = {
-            $set: {
-              paymentStatus: 'paid',
-              paidAt: new Date(),
-            },
-          };
-
-          const result = await freelancerHireCollection.updateOne(
-            filter,
-            updateDoc,
-          );
-
-          if (result.modifiedCount > 0) {
-            res.send({
-              success: true,
-              message: 'Payment marked as successful',
-            });
-          } else {
-            res.send({
-              success: false,
-              message: 'Payment update failed',
-            });
-          }
-        } catch (error) {
-          console.error('Payment Error:', error);
-          res.status(500).send({
-            success: false,
-            message: 'Internal Server Error',
-          });
-        }
-      },
-    );
-
     //Notifications API
     // Get notifications for specific user
     app.get('/notifications/:email', async (req, res) => {
