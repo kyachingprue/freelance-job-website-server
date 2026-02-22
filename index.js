@@ -308,17 +308,30 @@ async function run() {
     app.post('/work-submissions', async (req, res) => {
       const submission = req.body;
 
-      try {
-        const result = await freelancerWorkSubmissionCollection.insertOne(submission);
+      if (!submission?.hireId || !submission?.freelancerEmail) {
+        return res.status(400).send({ message: 'Missing required fields' });
+      }
 
+      try {
+        // 1️⃣ Save submission
+        const result = await freelancerWorkSubmissionCollection.insertOne({
+          ...submission,
+          createdAt: new Date(),
+        });
+
+        // 2️⃣ Update FreelancerHires status
         await freelancerHireCollection.updateOne(
-          {
-            jobId: submission.jobId,
-            freelancerEmail: submission.freelancerEmail,
-          },
+          { _id: new ObjectId(submission.hireId) },
           { $set: { status: 'submitted' } },
         );
 
+        // 3️⃣ Update ClientAddWork status
+        await clientAddWorkCollection.updateOne(
+          { hireId: submission.hireId.toString() },
+          { $set: { status: 'submitted' } },
+        );
+
+        // 4️⃣ Create notification
         await notificationsCollection.insertOne({
           receiverEmail: submission.clientEmail,
           message: `${submission.freelancerEmail} submitted work`,
@@ -328,6 +341,7 @@ async function run() {
 
         res.status(201).send(result);
       } catch (error) {
+        console.error(error);
         res.status(500).send({ message: 'Server error' });
       }
     });
@@ -375,11 +389,13 @@ async function run() {
       res.send(result);
     });
 
-    app.get('/client-submissions/by-hire/:hireId', async (req, res) => {
+    app.get('/client-submissions/by-job/:hireId', async (req, res) => {
       const { hireId } = req.params;
+
       const submissions = await freelancerWorkSubmissionCollection
-        .find({ hireId })
+        .find({ hireId: hireId }) 
         .toArray();
+
       res.send(submissions);
     });
 
@@ -462,10 +478,8 @@ async function run() {
       }
 
       try {
-        // 1️⃣ Save assigned work
         const result = await clientAddWorkCollection.insertOne(work);
 
-        // 2️⃣ Find hire info to get freelancer email
         const hire = await freelancerHireCollection.findOne({
           _id: new ObjectId(work.hireId),
         });
@@ -474,7 +488,6 @@ async function run() {
           return res.status(404).send({ message: 'Hire not found' });
         }
 
-        // 3️⃣ Create notification for freelancer
         const notification = {
           receiverEmail: hire.freelancerEmail,
           message: `You have received a new assigned project: "${hire.jobTitle}"`,
@@ -484,7 +497,6 @@ async function run() {
 
         await notificationsCollection.insertOne(notification);
 
-        // 4️⃣ Update hire status (optional but recommended)
         await freelancerHireCollection.updateOne(
           { _id: new ObjectId(work.hireId) },
           { $set: { status: 'in_progress' } },
@@ -523,6 +535,43 @@ async function run() {
       );
 
       res.send(result);
+    });
+
+    app.patch('/work-submissions/complete/:id', async (req, res) => {
+      const { id } = req.params;
+
+      if (!ObjectId.isValid(id))
+        return res.status(400).send({ message: 'Invalid ID' });
+
+      // 1️⃣ Update the work submission status
+      const result = await freelancerWorkSubmissionCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: { status: 'completed' } },
+      );
+
+      // 2️⃣ Get the updated submission
+      const updatedSubmission =
+        await freelancerWorkSubmissionCollection.findOne({
+          _id: new ObjectId(id),
+        });
+
+      if (!updatedSubmission)
+        return res.status(404).send({ message: 'Submission not found' });
+
+      // 3️⃣ Update clientAddWork status
+      await clientAddWorkCollection.updateOne(
+        { hireId: updatedSubmission.hireId },
+        { $set: { status: 'completed' } },
+      );
+
+      // 4️⃣ Update freelancerHires status
+      await freelancerHireCollection.updateOne(
+        { _id: new ObjectId(updatedSubmission.hireId) },
+        { $set: { status: 'completed' } },
+      );
+
+      // 5️⃣ Return updated submission for frontend
+      res.send({ success: result.modifiedCount > 0, updatedSubmission });
     });
 
     app.delete('/jobs/:id', async (req, res) => {
