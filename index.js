@@ -639,6 +639,7 @@ async function run() {
           budgetType: proposal.budgetType,
           currency: proposal.currency,
           estimatedTime: proposal.estimatedTime,
+          rating: 1.5, // default rating
           status: 'in_progress',
           hiredAt: new Date(),
         });
@@ -669,6 +670,107 @@ async function run() {
 
       res.send({ message: 'Status updated successfully' });
     });
+
+    app.patch('/freelancer-hires/add-rating', verifyToken, async (req, res) => {
+      try {
+        const { hireId, rating } = req.body;
+
+        if (!hireId || !rating) {
+          return res.status(400).send({
+            success: false,
+            message: 'Hire ID and rating are required',
+          });
+        }
+
+        if (rating < 1 || rating > 5) {
+          return res.status(400).send({
+            success: false,
+            message: 'Rating must be between 1 and 5',
+          });
+        }
+
+        const filter = { _id: new ObjectId(hireId) };
+
+        const updateDoc = {
+          $set: {
+            rating: rating,
+            ratedAt: new Date(),
+          },
+        };
+
+        const result = await freelancerHireCollection.updateOne(
+          filter,
+          updateDoc,
+        );
+
+        if (result.modifiedCount > 0) {
+          res.send({
+            success: true,
+            message: 'Rating added successfully',
+          });
+        } else {
+          res.send({
+            success: false,
+            message: 'Failed to update rating',
+          });
+        }
+      } catch (error) {
+        console.error('Add Rating Error:', error);
+        res.status(500).send({
+          success: false,
+          message: 'Internal Server Error',
+        });
+      }
+    });
+
+    app.patch(
+      '/freelancer-hires/make-payment',
+      verifyToken,
+      async (req, res) => {
+        try {
+          const { hireId } = req.body;
+
+          if (!hireId) {
+            return res.status(400).send({
+              success: false,
+              message: 'Hire ID is required',
+            });
+          }
+
+          const filter = { _id: new ObjectId(hireId) };
+
+          const updateDoc = {
+            $set: {
+              paymentStatus: 'paid',
+              paidAt: new Date(),
+            },
+          };
+
+          const result = await freelancerHireCollection.updateOne(
+            filter,
+            updateDoc,
+          );
+
+          if (result.modifiedCount > 0) {
+            res.send({
+              success: true,
+              message: 'Payment marked as successful',
+            });
+          } else {
+            res.send({
+              success: false,
+              message: 'Payment update failed',
+            });
+          }
+        } catch (error) {
+          console.error('Payment Error:', error);
+          res.status(500).send({
+            success: false,
+            message: 'Internal Server Error',
+          });
+        }
+      },
+    );
 
     //Notifications API
     // Get notifications for specific user
