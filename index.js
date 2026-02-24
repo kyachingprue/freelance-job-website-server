@@ -5,6 +5,7 @@ const cors = require('cors');
 const cookieParser = require('cookie-parser');
 const jwt = require('jsonwebtoken');
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
+const stripe = require('stripe')(process.env.VITE_PAYMENT_SECRET_KEY);
 const port = process.env.SERVER_PORT || 5000;
 
 app.use(express.json());
@@ -55,6 +56,7 @@ async function run() {
     const freelancerWorkSubmissionCollection = client
       .db('workHub')
       .collection('WorkSubmissions');
+    const paymentsCollection = client.db('workHub').collection('Payments');
 
     //JWT Authentication Middleware
     app.post('/jwt', async (req, res) => {
@@ -213,16 +215,85 @@ async function run() {
       }
     });
 
-    //Payment Method APIs
-    app.post('/create-payment-intent', async (req, res) => {
+    //Payment Intent APIs
+    // GET /payments?email=clientEmail
+    app.get('/payments', verifyToken, async (req, res) => {
       try {
-        const paymentIntent = await stripe.paymentIntent.create({
-          amount: 1000,
+        const clientEmail = req.query.email;
+
+        if (!clientEmail) {
+          return res.status(400).send({ message: 'Client email required' });
+        }
+
+        // Fetch payments for this client
+        const payments = await paymentsCollection
+          .find({ email: clientEmail })
+          .sort({ paidAt: -1 })
+          .toArray();
+
+        res.status(200).send(payments);
+      } catch (error) {
+        console.log('Error fetching payment history:', error);
+        res.status(500).send({ message: 'Failed to fetch payments' });
+      }
+    });
+
+   app.post('/payments', async (req, res) => {
+     try {
+       const { hireId, email, amount, paymentMethod, transactionId } = req.body;
+
+       // Validate request
+       if (!hireId || !email || !amount) {
+         return res
+           .status(400)
+           .send({ message: 'hireId, email, and amount are required' });
+       }
+
+       // Update work submission
+       const updateResult = await freelancerWorkSubmissionCollection.updateOne(
+         { hireId: hireId },
+         { $set: { payment_status: 'paid' } },
+       );
+
+       if (updateResult.matchedCount === 0) {
+         return res.status(400).send({ message: 'Job not found' });
+       }
+
+       // Insert payment record
+       const paymentDoc = {
+         hireId,
+         email,
+         amount,
+         paymentMethod,
+         transactionId,
+         paidAt: new Date(),
+       };
+
+       const paymentResult = await paymentsCollection.insertOne(paymentDoc);
+
+       res.status(201).send({
+         message: 'Payment recorded and Job marked as paid',
+         insertedId: paymentResult.insertedId,
+       });
+     } catch (error) {
+       console.log('Payment processing failed:', error);
+       res.status(500).send({ message: 'Failed to record payment' });
+     }
+   });
+
+    app.post('/create-payment-intent', async (req, res) => {
+      const amountIncents = req.body.amountIncents;
+
+      try {
+        const paymentIntent = await stripe.paymentIntents.create({
+          amount: amountIncents,
           currency: 'usd',
           payment_method_types: ['card'],
         });
+
         res.json({ clientSecret: paymentIntent.client_secret });
       } catch (error) {
+        console.log('Stripe Error:', error);
         res.status(500).json({ error: error.message });
       }
     });
@@ -349,14 +420,6 @@ async function run() {
           { $set: { status: 'submitted' } },
         );
 
-        // 4️⃣ Create notification
-        await notificationsCollection.insertOne({
-          receiverEmail: submission.clientEmail,
-          message: `${submission.freelancerEmail} submitted work`,
-          status: 'unread',
-          createdAt: new Date(),
-        });
-
         res.status(201).send(result);
       } catch (error) {
         console.error(error);
@@ -399,12 +462,80 @@ async function run() {
       }
     });
 
+    // DELETE work submission + associated clientAddWork
+    app.delete('/work-submissions/:id', async (req, res) => {
+      const submissionId = req.params.id;
+
+      try {
+        // 1️⃣ Find the submission
+        const submission = await freelancerWorkSubmissionCollection.findOne({
+          _id: new ObjectId(submissionId),
+        });
+
+        if (!submission) {
+          return res.status(404).send({
+            success: false,
+            message: 'Submission not found',
+          });
+        }
+
+        // 2️⃣ Only allow deletion if payment_status is PAID
+        if (submission.payment_status !== 'paid') {
+          return res.status(400).send({
+            success: false,
+            message: 'Cannot delete submission with pending payment',
+          });
+        }
+
+        // 3️⃣ Delete work submission
+        const deleteSubmissionResult =
+          await freelancerWorkSubmissionCollection.deleteOne({
+            _id: new ObjectId(submissionId),
+          });
+
+        // 4️⃣ Delete associated clientAddWork record
+        const deleteClientWorkResult = await clientAddWorkCollection.deleteOne({
+          hireId: submission.hireId,
+        });
+
+        res.send({
+          success: true,
+          message:
+            'Work submission and associated clientAddWork deleted successfully',
+          deletedSubmission: deleteSubmissionResult.deletedCount,
+          deletedClientWork: deleteClientWorkResult.deletedCount,
+        });
+      } catch (error) {
+        console.error('Delete submission error:', error);
+        res.status(500).send({
+          success: false,
+          message: 'Server error while deleting submission',
+        });
+      }
+    });
+
     // Client API
     // Get single job by id
     app.get('/jobs', async (req, res) => {
       const cursor = jobsCollection.find();
       const result = await cursor.toArray();
       res.send(result);
+    });
+
+    // Express server
+    app.get('/work-submissions/:hireId', async (req, res) => {
+      try {
+        const { hireId } = req.params;
+        const submission = await freelancerWorkSubmissionCollection.findOne({
+          hireId,
+        });
+        if (!submission)
+          return res.status(404).send({ message: 'Submission not found' });
+        res.send(submission);
+      } catch (err) {
+        console.error(err);
+        res.status(500).send({ message: 'Server error' });
+      }
     });
 
     app.get('/client-submissions/by-job/:hireId', async (req, res) => {
