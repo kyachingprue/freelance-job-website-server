@@ -49,8 +49,12 @@ async function run() {
     const freelancerHireCollection = client
       .db('workHub')
       .collection('FreelancerHires');
-    const clientAddWorkCollection = client.db('workHub').collection('ClientAddWork');
-    const freelancerWorkSubmissionCollection = client.db('workHub').collection('WorkSubmissions');
+    const clientAddWorkCollection = client
+      .db('workHub')
+      .collection('ClientAddWork');
+    const freelancerWorkSubmissionCollection = client
+      .db('workHub')
+      .collection('WorkSubmissions');
 
     //JWT Authentication Middleware
     app.post('/jwt', async (req, res) => {
@@ -206,6 +210,20 @@ async function run() {
         res
           .status(500)
           .send({ message: 'Failed to update verification status' });
+      }
+    });
+
+    //Payment Method APIs
+    app.post('/create-payment-intent', async (req, res) => {
+      try {
+        const paymentIntent = await stripe.paymentIntent.create({
+          amount: 1000,
+          currency: 'usd',
+          payment_method_types: ['card'],
+        });
+        res.json({ clientSecret: paymentIntent.client_secret });
+      } catch (error) {
+        res.status(500).json({ error: error.message });
       }
     });
 
@@ -393,7 +411,7 @@ async function run() {
       const { hireId } = req.params;
 
       const submissions = await freelancerWorkSubmissionCollection
-        .find({ hireId: hireId }) 
+        .find({ hireId: hireId })
         .toArray();
 
       res.send(submissions);
@@ -761,7 +779,7 @@ async function run() {
     });
 
     //Client Hire Freelancer API
-    app.get('/hires/:email', async (req, res) => {
+    app.get('/hires/email/:email', async (req, res) => {
       const email = req.params.email;
 
       try {
@@ -773,6 +791,54 @@ async function run() {
 
         res.send(result);
       } catch (error) {
+        res.status(500).send({ message: 'Server error' });
+      }
+    });
+
+    app.get('/hires/:id', verifyToken, async (req, res) => {
+      const id = req.params.id;
+
+      // 1️⃣ Validate ObjectId
+      if (!ObjectId.isValid(id)) {
+        return res.status(400).send({ message: 'Invalid hire ID' });
+      }
+
+      try {
+        // 2️⃣ Find hire data
+        const hireInfo = await freelancerHireCollection.findOne({
+          _id: new ObjectId(id),
+        });
+
+        if (!hireInfo) {
+          return res.status(404).send({ message: 'Hire not found' });
+        }
+
+        // 3️⃣ Security Check (Only client or freelancer can see)
+        if (
+          hireInfo.clientEmail !== req.decoded.email &&
+          hireInfo.freelancerEmail !== req.decoded.email
+        ) {
+          return res.status(403).send({ message: 'Forbidden access' });
+        }
+
+        // 4️⃣ Get Work Submissions
+        const submissions = await freelancerWorkSubmissionCollection
+          .find({ hireId: id })
+          .sort({ createdAt: -1 })
+          .toArray();
+
+        // 5️⃣ Get Assigned Works (if any)
+        const assignedWorks = await clientAddWorkCollection
+          .find({ hireId: id })
+          .toArray();
+
+        res.send({
+          hireInfo,
+          submissions,
+          assignedWorks,
+        });
+      } catch (error) {
+        console.error('Hire Details Error:', error);
         res.status(500).send({ message: 'Server error' });
       }
     });
