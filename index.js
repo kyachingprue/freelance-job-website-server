@@ -217,39 +217,37 @@ async function run() {
 
     //Payment Intent APIs
     // GET /payments?email=clientEmail
-   app.get('/payments', verifyToken, async (req, res) => {
-     try {
-       const { email, freelancerEmail } = req.query;
+    app.get('/payments', verifyToken, async (req, res) => {
+      try {
+        const { email, freelancerEmail } = req.query;
 
-       console.log('Query params:', req.query); // debug
+        console.log('Query params:', req.query); // debug
 
-       // require at least one
-       if (!email && !freelancerEmail) {
-         return res
-           .status(400)
-           .send({ message: 'Email or freelancerEmail required' });
-       }
+        // require at least one
+        if (!email && !freelancerEmail) {
+          return res
+            .status(400)
+            .send({ message: 'Email or freelancerEmail required' });
+        }
 
-       const query = {};
+        const query = {};
 
-       if (email) query.email = email; // client payments
-       if (freelancerEmail) query.freelancerEmail = freelancerEmail; // freelancer earnings
+        if (email) query.email = email; // client payments
+        if (freelancerEmail) query.freelancerEmail = freelancerEmail; // freelancer earnings
 
-       console.log('Mongo query:', query); // debug
+        console.log('Mongo query:', query); // debug
 
-       const payments = await paymentsCollection
-         .find(query)
-         .sort({ paidAt: -1 })
-         .toArray();
+        const payments = await paymentsCollection
+          .find(query)
+          .sort({ paidAt: -1 })
+          .toArray();
 
-       res.status(200).send(payments);
-     } catch (error) {
-       console.error('Error fetching payment history:', error);
-       res.status(500).send({ message: 'Failed to fetch payments' });
-     }
-   });
-    
-    
+        res.status(200).send(payments);
+      } catch (error) {
+        console.error('Error fetching payment history:', error);
+        res.status(500).send({ message: 'Failed to fetch payments' });
+      }
+    });
 
     app.post('/payments', async (req, res) => {
       try {
@@ -1077,9 +1075,8 @@ async function run() {
     });
 
     // ✅ Get Single User Details (Admin Only)
-    app.get('/jobs/:id', async (req, res) => {
+    app.get('/jobs/admin/:id', async (req, res) => {
       const id = req.params.id;
-
       try {
         let query =
           ObjectId.isValid(id) && id.length === 24
@@ -1095,6 +1092,87 @@ async function run() {
         res.status(500).send({ message: 'Server error' });
       }
     });
+
+    // Admin Reports Aggregation Endpoint
+    app.get(
+      '/api/admin/reports',
+      verifyToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          // ✅ Users
+          const users = await usersCollection.find().toArray();
+          const totalUsers = users.length;
+          const totalClients = users.filter(u => u.role === 'client').length;
+          const totalFreelancers = users.filter(
+            u => u.role === 'freelancer',
+          ).length;
+
+          // ✅ Jobs
+          const jobs = await jobsCollection.find().toArray();
+          const totalJobs = jobs.length;
+          const openJobs = jobs.filter(j => j.status === 'Open').length;
+
+          // Jobs per category
+          const jobsPerCategory = {};
+          jobs.forEach(j => {
+            const cat = j.category || 'Uncategorized';
+            jobsPerCategory[cat] = (jobsPerCategory[cat] || 0) + 1;
+          });
+
+          // ✅ Proposals
+          const proposals = await proposalsCollection.find().toArray();
+          const totalProposals = proposals.length;
+          const acceptedProposals = proposals.filter(
+            p => p.status === 'accepted',
+          ).length;
+
+          // ✅ Payments
+          const payments = await paymentsCollection.find().toArray();
+          const totalPayments = payments.reduce(
+            (sum, p) => sum + Number(p.amount),
+            0,
+          );
+          const paidPayments = payments
+            .filter(p => p.paymentStatus === 'paid')
+            .reduce((sum, p) => sum + Number(p.amount), 0);
+          const pendingPayments = payments
+            .filter(p => p.paymentStatus !== 'paid')
+            .reduce((sum, p) => sum + Number(p.amount), 0);
+
+          // ✅ Work Submissions
+          const workSubmissions = await freelancerWorkSubmissionCollection
+            .find()
+            .toArray();
+          const completedWork = workSubmissions.filter(
+            w => w.status === 'completed',
+          ).length;
+          const inProgressWork = workSubmissions.filter(
+            w => w.status !== 'completed',
+          ).length;
+
+          // 📌 Return aggregated data
+          res.send({
+            totalUsers,
+            totalClients,
+            totalFreelancers,
+            totalJobs,
+            openJobs,
+            totalProposals,
+            acceptedProposals,
+            totalPayments,
+            paidPayments,
+            pendingPayments,
+            jobsPerCategory,
+            completedWork,
+            inProgressWork,
+          });
+        } catch (err) {
+          console.error('Admin Reports Error:', err);
+          res.status(500).send({ message: 'Failed to fetch admin reports' });
+        }
+      },
+    );
 
     app.get('/payments/admin', verifyToken, async (req, res) => {
       try {
