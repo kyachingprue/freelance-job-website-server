@@ -248,6 +248,8 @@ async function run() {
        res.status(500).send({ message: 'Failed to fetch payments' });
      }
    });
+    
+    
 
     app.post('/payments', async (req, res) => {
       try {
@@ -1091,6 +1093,29 @@ async function run() {
       } catch (err) {
         console.error('Get Job Error:', err);
         res.status(500).send({ message: 'Server error' });
+      }
+    });
+
+    app.get('/payments/admin', verifyToken, async (req, res) => {
+      try {
+        const userEmail = req.decoded.email;
+
+        const user = await usersCollection.findOne({ email: userEmail });
+
+        if (!user || user.role !== 'admin') {
+          return res.status(403).send({ message: 'Forbidden: Admin only' });
+        }
+
+        // 📌 Get All Payments (Latest First)
+        const payments = await paymentsCollection
+          .find({})
+          .sort({ paidAt: -1 })
+          .toArray();
+
+        res.send(payments);
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ message: 'Failed to fetch payments' });
       }
     });
 
