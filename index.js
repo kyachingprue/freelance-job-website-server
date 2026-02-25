@@ -217,69 +217,88 @@ async function run() {
 
     //Payment Intent APIs
     // GET /payments?email=clientEmail
-    app.get('/payments', verifyToken, async (req, res) => {
-      try {
-        const clientEmail = req.query.email;
-
-        if (!clientEmail) {
-          return res.status(400).send({ message: 'Client email required' });
-        }
-
-        // Fetch payments for this client
-        const payments = await paymentsCollection
-          .find({ email: clientEmail })
-          .sort({ paidAt: -1 })
-          .toArray();
-
-        res.status(200).send(payments);
-      } catch (error) {
-        console.log('Error fetching payment history:', error);
-        res.status(500).send({ message: 'Failed to fetch payments' });
-      }
-    });
-
-   app.post('/payments', async (req, res) => {
+   app.get('/payments', verifyToken, async (req, res) => {
      try {
-       const { hireId, email, amount, paymentMethod, transactionId } = req.body;
+       const { email, freelancerEmail } = req.query;
 
-       // Validate request
-       if (!hireId || !email || !amount) {
+       console.log('Query params:', req.query); // debug
+
+       // require at least one
+       if (!email && !freelancerEmail) {
          return res
            .status(400)
-           .send({ message: 'hireId, email, and amount are required' });
+           .send({ message: 'Email or freelancerEmail required' });
        }
 
-       // Update work submission
-       const updateResult = await freelancerWorkSubmissionCollection.updateOne(
-         { hireId: hireId },
-         { $set: { payment_status: 'paid' } },
-       );
+       const query = {};
 
-       if (updateResult.matchedCount === 0) {
-         return res.status(400).send({ message: 'Job not found' });
-       }
+       if (email) query.email = email; // client payments
+       if (freelancerEmail) query.freelancerEmail = freelancerEmail; // freelancer earnings
 
-       // Insert payment record
-       const paymentDoc = {
-         hireId,
-         email,
-         amount,
-         paymentMethod,
-         transactionId,
-         paidAt: new Date(),
-       };
+       console.log('Mongo query:', query); // debug
 
-       const paymentResult = await paymentsCollection.insertOne(paymentDoc);
+       const payments = await paymentsCollection
+         .find(query)
+         .sort({ paidAt: -1 })
+         .toArray();
 
-       res.status(201).send({
-         message: 'Payment recorded and Job marked as paid',
-         insertedId: paymentResult.insertedId,
-       });
+       res.status(200).send(payments);
      } catch (error) {
-       console.log('Payment processing failed:', error);
-       res.status(500).send({ message: 'Failed to record payment' });
+       console.error('Error fetching payment history:', error);
+       res.status(500).send({ message: 'Failed to fetch payments' });
      }
    });
+
+    app.post('/payments', async (req, res) => {
+      try {
+        const {
+          hireId,
+          email,
+          freelancerEmail,
+          amount,
+          paymentMethod,
+          transactionId,
+        } = req.body;
+
+        // Validate request
+        if (!hireId || !email || !amount) {
+          return res
+            .status(400)
+            .send({ message: 'hireId, email, and amount are required' });
+        }
+
+        // Update work submission
+        const updateResult = await freelancerWorkSubmissionCollection.updateOne(
+          { hireId: hireId },
+          { $set: { payment_status: 'paid' } },
+        );
+
+        if (updateResult.matchedCount === 0) {
+          return res.status(400).send({ message: 'Job not found' });
+        }
+
+        // Insert payment record
+        const paymentDoc = {
+          hireId,
+          email,
+          amount,
+          freelancerEmail,
+          paymentMethod,
+          transactionId,
+          paidAt: new Date(),
+        };
+
+        const paymentResult = await paymentsCollection.insertOne(paymentDoc);
+
+        res.status(201).send({
+          message: 'Payment recorded and Job marked as paid',
+          insertedId: paymentResult.insertedId,
+        });
+      } catch (error) {
+        console.log('Payment processing failed:', error);
+        res.status(500).send({ message: 'Failed to record payment' });
+      }
+    });
 
     app.post('/create-payment-intent', async (req, res) => {
       const amountIncents = req.body.amountIncents;
@@ -520,6 +539,26 @@ async function run() {
       const cursor = jobsCollection.find();
       const result = await cursor.toArray();
       res.send(result);
+    });
+
+    app.get('/work-submissions', verifyToken, async (req, res) => {
+      try {
+        const { freelancerEmail } = req.query;
+
+        if (!freelancerEmail) {
+          return res.status(400).send({ message: 'freelancerEmail required' });
+        }
+
+        const submissions = await freelancerWorkSubmissionCollection
+          .find({ freelancerEmail })
+          .sort({ submittedAt: -1 })
+          .toArray();
+
+        res.status(200).send(submissions);
+      } catch (error) {
+        console.log('Error fetching work submissions:', error);
+        res.status(500).send({ message: 'Failed to fetch work submissions' });
+      }
     });
 
     // Express server
@@ -924,6 +963,16 @@ async function run() {
       } catch (error) {
         res.status(500).send({ message: 'Server error' });
       }
+    });
+
+    app.get('/hires', async (req, res) => {
+      const { freelancerEmail } = req.query;
+
+      const query = freelancerEmail ? { freelancerEmail } : {};
+
+      const result = await freelancerHireCollection.find(query).toArray();
+
+      res.send(result);
     });
 
     app.get('/hires/:id', verifyToken, async (req, res) => {
