@@ -31,12 +31,12 @@ const client = new MongoClient(uri, {
 async function run() {
   try {
     // Connect the client to the server	(optional starting in v4.7)
-    await client.connect();
+    // await client.connect();
     // Send a ping to confirm a successful connection
     // await client.db('admin').command({ ping: 1 });
-    console.log(
-      'Pinged your deployment. You successfully connected to MongoDB!',
-    );
+    // console.log(
+    //   'Pinged your deployment. You successfully connected to MongoDB!',
+    // );
 
     const jobsCollection = client.db('workHub').collection('Jobs');
     const usersCollection = client.db('workHub').collection('Users');
@@ -326,36 +326,53 @@ async function run() {
 
       res.send(requests);
     });
-    app.post('/role-request', async (req, res) => {
-      const { userId, userEmail, currentRole, requestRole } = req.body;
 
-      if (!userId) {
-        return res.status(400).send({ message: 'User ID required' });
-      }
+   app.post('/role-request', async (req, res) => {
+     const { userId, userEmail, currentRole, requestRole, userProfile } =
+       req.body;
 
-      // check already requested
-      const existingRequest = await roleRequestCollection.findOne({
-        userId: userId,
-      });
+    if (!userEmail)
+      return res.status(400).send({ message: 'User email required' });
+    if (!requestRole)
+      return res.status(400).send({ message: 'Request role required' });
 
-      if (existingRequest) {
-        return res.status(400).send({ message: 'You already sent a request' });
-      }
+     const existingRequest = await roleRequestCollection.findOne({ userId });
+     if (existingRequest)
+       return res.status(400).send({ message: 'You already sent a request' });
 
-      // save request
-      const requestDoc = {
-        userId,
-        userEmail,
-        currentRole,
-        requestRole,
-        status: 'pending',
-        createdAt: new Date(),
-      };
+     const requestDoc = {
+       userId,
+       userEmail,
+       currentRole,
+       requestRole,
+       userProfile,
+       status: 'pending',
+       createdAt: new Date(),
+     };
 
-      const result = await roleRequestCollection.insertOne(requestDoc);
+     const result = await roleRequestCollection.insertOne(requestDoc);
 
-      res.send(result);
-    });
+     // optional: update user to mark roleRequestSent
+     await usersCollection.updateOne(
+       { _id: userId },
+       { $set: { roleRequestSent: true, photoURL: userProfile } },
+     );
+
+     const adminUser = await usersCollection.findOne({ role: 'admin' });
+     const adminEmail =
+       adminUser?.email || 'kyachingpruemarma.studio@gmail.com';
+
+     await notificationsCollection.insertOne({
+       receiverEmail: adminEmail, 
+       senderEmail: userEmail,
+       type: 'role-request',
+       message: `${userEmail} requested to switch to a client account`,
+       status: 'unread', 
+       createdAt: new Date(),
+     });
+
+     res.send({ result, adminEmail });
+   });
 
     app.patch('/role-request/approve/:id', async (req, res) => {
       const requestId = req.params.id;
@@ -927,6 +944,7 @@ async function run() {
         res.status(500).send({ message: 'Server error' });
       }
     });
+
     app.get('/notifications/unread-count/:email', async (req, res) => {
       const email = req.params.email;
 
@@ -1054,6 +1072,241 @@ async function run() {
         });
       } catch (error) {
         console.error(error);
+        res.status(500).send({ message: 'Server error' });
+      }
+    });
+
+    app.get('/freelancer/dashboard', verifyToken, async (req, res) => {
+      try {
+        const { email } = req.query;
+
+        if (!email) {
+          return res.status(400).send({ message: 'Freelancer email required' });
+        }
+
+        // 🔐 Secure check
+        if (!req.decoded || req.decoded.email !== email) {
+          return res.status(403).send({ message: 'Forbidden access' });
+        }
+
+        const freelancer = await usersCollection.findOne({ email });
+
+        if (!freelancer) {
+          return res.status(404).send({ message: 'Freelancer not found' });
+        }
+
+        const [
+          totalHires,
+          submittedWorks,
+          completedWorks,
+          pendingWorks,
+          totalProposals,
+          earningsResult,
+          recentSubmissions,
+        ] = await Promise.all([
+          freelancerHireCollection.countDocuments({
+            freelancerEmail: email,
+          }),
+
+          freelancerWorkSubmissionCollection.countDocuments({
+            freelancerEmail: email,
+          }),
+
+          freelancerHireCollection.countDocuments({
+            freelancerEmail: email,
+            status: 'completed',
+          }),
+
+          freelancerHireCollection.countDocuments({
+            freelancerEmail: email,
+            status: { $in: ['pending', 'active'] },
+          }),
+
+          proposalsCollection.countDocuments({
+            freelancerEmail: email,
+          }),
+
+          // 💰 MongoDB Aggregation (Better than reduce)
+          paymentsCollection
+            .aggregate([
+              { $match: { freelancerEmail: email } },
+              {
+                $group: {
+                  _id: null,
+                  total: { $sum: { $toDouble: '$amount' } },
+                },
+              },
+            ])
+            .toArray(),
+
+          freelancerWorkSubmissionCollection
+            .find({ freelancerEmail: email })
+            .sort({ createdAt: -1 })
+            .limit(5)
+            .toArray(),
+        ]);
+
+        // Extract total earnings safely
+        const totalEarnings = earningsResult[0]?.total || 0;
+
+        res.status(200).send({
+          profile: freelancer,
+          stats: {
+            totalHires,
+            submittedWorks,
+            completedWorks,
+            totalEarnings,
+            pendingWorks,
+            totalProposals,
+          },
+          recentSubmissions,
+        });
+      } catch (error) {
+        console.error('Freelancer Dashboard Error:', error);
+        res.status(500).send({ message: 'Server error' });
+      }
+    });
+
+    app.get('/client/dashboard', verifyToken, async (req, res) => {
+      try {
+        const { email } = req.query;
+
+        if (!email)
+          return res.status(400).send({ message: 'Client email required' });
+        if (!req.decoded || req.decoded.email !== email)
+          return res.status(403).send({ message: 'Forbidden access' });
+
+        const client = await usersCollection.findOne({ email });
+        if (!client)
+          return res.status(404).send({ message: 'Client not found' });
+
+        const [
+          totalJobs,
+          activeJobs,
+          completedJobs,
+          totalHires,
+          totalSpentResult,
+          recentJobs,
+          recentHires,
+          recentPayments,
+        ] = await Promise.all([
+          jobsCollection.countDocuments({ 'client.email': email }), // fixed
+
+          jobsCollection.countDocuments({
+            'client.email': email,
+            status: 'Open', // active jobs
+          }),
+
+          jobsCollection.countDocuments({
+            'client.email': email,
+            status: 'Closed', // completed jobs
+          }),
+
+          freelancerHireCollection.countDocuments({
+            clientEmail: email,
+          }),
+
+          paymentsCollection
+            .aggregate([
+              { $match: { email } },
+              {
+                $group: {
+                  _id: null,
+                  total: { $sum: { $toDouble: '$amount' } },
+                },
+              },
+            ])
+            .toArray(),
+
+          jobsCollection
+            .find({ 'client.email': email })
+            .sort({ postedAt: -1 })
+            .limit(5)
+            .toArray(),
+
+          freelancerHireCollection
+            .find({ clientEmail: email })
+            .sort({ createdAt: -1 })
+            .limit(5)
+            .toArray(),
+
+          paymentsCollection
+            .find({ email })
+            .sort({ paidAt: -1 })
+            .limit(5)
+            .toArray(),
+        ]);
+
+        const totalSpent = totalSpentResult[0]?.total || 0;
+
+        res.send({
+          profile: client,
+          stats: {
+            totalJobs,
+            activeJobs,
+            completedJobs,
+            totalHires,
+            totalSpent,
+          },
+          recentJobs,
+          recentHires,
+          recentPayments,
+        });
+      } catch (error) {
+        console.error('Client Dashboard Error:', error);
+        res.status(500).send({ message: 'Server error' });
+      }
+    });
+
+    app.get('/admin/dashboard', verifyToken, async (req, res) => {
+      try {
+        // 🔐 Security: Only allow admins
+        const requesterEmail = req.decoded?.email;
+        if (!requesterEmail) {
+          return res.status(403).send({ message: 'Forbidden access' });
+        }
+
+        const adminUser = await usersCollection.findOne({
+          email: requesterEmail,
+        });
+        if (!adminUser || adminUser.role !== 'admin') {
+          return res
+            .status(403)
+            .send({ message: 'Only admins can access this' });
+        }
+
+        // Use Promise.all for parallel queries
+        const [
+          totalUsers,
+          totalFreelancers,
+          totalClients,
+          totalJobs,
+          pendingRoleRequests,
+          recentUsers,
+          recentJobs,
+        ] = await Promise.all([
+          usersCollection.countDocuments({}),
+          usersCollection.countDocuments({ role: 'freelancer' }),
+          usersCollection.countDocuments({ role: 'client' }),
+          jobsCollection.countDocuments({}),
+          roleRequestCollection.countDocuments({ status: 'pending' }),
+          usersCollection.find({}).sort({ createdAt: -1 }).limit(5).toArray(),
+          jobsCollection.find({}).sort({ createdAt: -1 }).limit(5).toArray(),
+        ]);
+
+        res.status(200).send({
+          stats: {
+            totalUsers,
+            totalFreelancers,
+            totalClients,
+            totalJobs,
+            pendingRoleRequests,
+          },
+          recentUsers,
+          recentJobs,
+        });
+      } catch (error) {
+        console.error('Admin Dashboard Error:', error);
         res.status(500).send({ message: 'Server error' });
       }
     });
