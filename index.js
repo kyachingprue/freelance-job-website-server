@@ -11,7 +11,12 @@ const port = process.env.SERVER_PORT || 5000;
 app.use(express.json());
 app.use(
   cors({
-    origin: ['http://localhost:5173'],
+    origin: [
+      'http://localhost:5173',
+      'https://freelance-job-website-client.vercel.app',
+      'https://freelance-job-website-c-git-02a1df-kyachingprue-marmas-projects.vercel.app',
+      'https://freelance-job-website-client-harvrcahp.vercel.app',
+    ],
     credentials: true,
   }),
 );
